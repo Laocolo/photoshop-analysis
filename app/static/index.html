@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>摄影点评助手</title>
+<!-- iOS 添加到主屏幕后全屏运行 -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="摄影点评">
+<meta name="theme-color" content="#111827">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="icon" href="/icon-192.png">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { touch-action: manipulation; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #111827; color: #e5e7eb;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+    background: #0b1220; border-bottom: 1px solid #1f2937;
+  }
+  header h1 { font-size: 17px; font-weight: 600; }
+  header button { background: none; border: none; color: #9ca3af; font-size: 22px; padding: 4px 8px; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px; }
+  .card { background: #1f2937; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+
+  #pick-btn {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px; width: 100%; padding: 34px 0;
+    border: 2px dashed #4b5563; border-radius: 12px;
+    color: #9ca3af; font-size: 16px; cursor: pointer; background: none;
+  }
+  #pick-btn .big { font-size: 34px; }
+
+  #preview-wrap {
+    height: 46vh; display: flex; align-items: center; justify-content: center;
+    overflow: hidden; background: #0b1220; border-radius: 10px;
+  }
+  #preview { max-width: 100%; max-height: 100%; transition: transform .2s; }
+  .row { display: flex; gap: 10px; margin-top: 10px; }
+  .btn {
+    border: none; border-radius: 10px; font-size: 16px; padding: 12px 0;
+    text-align: center; cursor: pointer; flex: 1;
+  }
+  .btn-sub { background: #374151; color: #e5e7eb; }
+  .btn-main { background: #2563eb; color: #fff; font-weight: 600; }
+  .btn-main:disabled { background: #1e3a8a; color: #93c5fd; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .field label { display: block; font-size: 12px; color: #9ca3af; margin-bottom: 4px; }
+  .field input, .field textarea, .field select {
+    width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #374151;
+    background: #111827; color: #e5e7eb; font-size: 15px; outline: none;
+  }
+  .field input:focus, .field textarea:focus, .field select:focus { border-color: #2563eb; }
+  .field textarea { resize: vertical; min-height: 60px; font-family: inherit; }
+  .hint { font-size: 12px; color: #6b7280; margin-top: 8px; }
+
+  h2.sec { font-size: 14px; color: #9ca3af; margin: 18px 0 10px; font-weight: 500; }
+
+  #result-body h3 { font-size: 16px; color: #93c5fd; margin: 16px 0 8px; }
+  #result-body p { font-size: 15px; line-height: 1.7; margin: 6px 0; }
+  #result-body ul { padding-left: 20px; }
+  #result-body li { font-size: 15px; line-height: 1.7; margin: 4px 0; }
+  #result-body strong { color: #fbbf24; }
+  #result-body code { background: #374151; border-radius: 4px; padding: 1px 5px; font-size: 13px; }
+
+  .overlay {
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(0,0,0,.72);
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .sheet {
+    width: 100%; max-width: 420px; background: #1f2937; border-radius: 14px;
+    padding: 20px; max-height: 85vh; overflow-y: auto;
+  }
+  .sheet h2 { font-size: 17px; margin-bottom: 14px; }
+  .sheet .field { margin-bottom: 12px; }
+
+  #loading { flex-direction: column; gap: 14px; }
+  .spinner {
+    width: 42px; height: 42px; border-radius: 50%;
+    border: 4px solid #374151; border-top-color: #3b82f6;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loading p { color: #d1d5db; font-size: 15px; text-align: center; line-height: 1.6; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 60px; transform: translateX(-50%);
+    background: #374151; color: #f9fafb; padding: 10px 18px; border-radius: 20px;
+    font-size: 14px; opacity: 0; transition: opacity .25s; pointer-events: none;
+    z-index: 99; max-width: 86vw; text-align: center;
+  }
+  #toast.show { opacity: 1; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📷 摄影点评助手</h1>
+  <button id="settings-btn" aria-label="设置">⚙️</button>
+</header>
+
+<main>
+  <div class="card">
+    <button id="pick-btn">
+      <span class="big">🖼️</span>
+      <span>选择照片</span>
+      <span style="font-size:12px">从相册选一张你拍的照片</span>
+    </button>
+    <input type="file" id="file-input" accept="image/*" hidden>
+  </div>
+
+  <div id="editor" hidden>
+    <div class="card">
+      <div id="preview-wrap"><img id="preview" alt="预览"></div>
+      <div class="row">
+        <button class="btn btn-sub" id="rotate-btn">⟳ 旋转 90°</button>
+      </div>
+      <div class="hint">照片方向不对时点旋转，AI 将按调整后的画面点评</div>
+    </div>
+
+    <h2 class="sec">拍摄参数（自动读取，可修改）</h2>
+    <div class="card grid">
+      <div class="field"><label>相机</label><input id="p-camera" placeholder="如 Sony A7M4"></div>
+      <div class="field"><label>拍摄时间</label><input id="p-datetime" placeholder="如 2026:07:20 15:30"></div>
+      <div class="field"><label>光圈</label><input id="p-aperture" placeholder="如 f/2.8"></div>
+      <div class="field"><label>快门</label><input id="p-shutter" placeholder="如 1/250s"></div>
+      <div class="field"><label>ISO</label><input id="p-iso" placeholder="如 ISO 400"></div>
+      <div class="field"><label>焦距</label><input id="p-focal_length" placeholder="如 35mm"></div>
+    </div>
+
+    <h2 class="sec">补充信息（可选）</h2>
+    <div class="card">
+      <div class="field" style="margin-bottom:10px">
+        <label>大概拍摄时间 / 光线</label>
+        <input id="extra" placeholder="如：傍晚六点的夕阳 / 室内灯光">
+      </div>
+      <div class="field">
+        <label>你想要的拍摄效果</label>
+        <textarea id="intent" placeholder="如：想拍出背景虚化的人像"></textarea>
+      </div>
+    </div>
+
+    <button class="btn btn-main" id="go-btn" style="width:100%">开始点评</button>
+  </div>
+
+  <div id="result" hidden>
+    <h2 class="sec">点评结果</h2>
+    <div class="card"><div id="result-body"></div></div>
+  </div>
+</main>
+
+<!-- 加载遮罩 -->
+<div class="overlay" id="loading" hidden>
+  <div class="spinner"></div>
+  <p>AI 点评中，一般需要 30~90 秒<br>已等待 <span id="elapsed">0</span> 秒</p>
+</div>
+
+<!-- 访问密码 -->
+<div class="overlay" id="auth-overlay" hidden>
+  <div class="sheet">
+    <h2>输入访问密码</h2>
+    <div class="field"><input type="password" id="auth-input" placeholder="服务器设置的访问密码"></div>
+    <button class="btn btn-main" id="auth-ok" style="width:100%">确定</button>
+  </div>
+</div>
+
+<!-- 设置 -->
+<div class="overlay" id="settings-overlay" hidden>
+  <div class="sheet">
+    <h2>设置</h2>
+    <div class="hint" id="s-current" style="margin-bottom:12px"></div>
+
+    <div class="field">
+      <label>已保存的服务商</label>
+      <select id="s-provider-list"></select>
+    </div>
+    <div class="row" style="margin-bottom:14px">
+      <button class="btn btn-main" id="s-activate">启用</button>
+      <button class="btn btn-sub" id="s-remove">删除</button>
+    </div>
+
+    <div class="field">
+      <label>从模板快速填入</label>
+      <select id="s-preset"></select>
+    </div>
+    <div class="field"><label>API 地址（base_url）</label><input id="s-base-url"></div>
+    <div class="field"><label>模型</label><input id="s-model"></div>
+    <div class="field"><label>API Key</label><input type="password" id="s-api-key"><div class="hint" id="s-key-hint"></div></div>
+    <div class="field">
+      <label>存为服务商（保存后可随时一键切换）</label>
+      <div class="row" style="margin-top:0">
+        <input id="s-provider-name" placeholder="名称，如 Agnes AI" style="flex:1;padding:10px;border-radius:8px;border:1px solid #374151;background:#111827;color:#e5e7eb;font-size:15px;outline:none">
+        <button class="btn btn-sub" id="s-save-provider" style="flex:0 0 auto;padding:12px 14px">存为服务商</button>
+      </div>
+    </div>
+
+    <div class="field" style="margin-top:6px">
+      <label>访问密码（公网使用时建议设置，局域网可留空）</label>
+      <input type="password" id="s-access-token" placeholder="输入以设置 / 修改">
+      <div class="hint" id="s-token-hint"></div>
+    </div>
+    <label style="font-size:13px;color:#9ca3af;display:flex;gap:6px;align-items:center;margin-bottom:14px">
+      <input type="checkbox" id="s-clear-token"> 清除访问密码
+    </label>
+    <div class="row">
+      <button class="btn btn-sub" id="settings-cancel">取消</button>
+      <button class="btn btn-main" id="settings-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let file = null, angle = 0, objectUrl = null, elapsedTimer = null;
+
+// ---------- 基础工具 ----------
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove("show"), 2800);
+}
+
+async function apiFetch(url, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers, {
+    "X-Access-Token": localStorage.getItem("access_token") || ""
+  });
+  const resp = await fetch(url, opts);
+  if (resp.status === 401) {
+    $("auth-overlay").hidden = false;
+    throw new Error("需要访问密码");
+  }
+  return resp;
+}
+
+async function apiJson(url, opts) {
+  const resp = await apiFetch(url, opts);
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || ("请求失败 " + resp.status));
+  return data;
+}
+
+// ---------- 访问密码 ----------
+
+$("auth-ok").onclick = async () => {
+  const v = $("auth-input").value.trim();
+  if (!v) return;
+  localStorage.setItem("access_token", v);
+  try {
+    await apiJson("/api/ping");
+    $("auth-overlay").hidden = true;
+    toast("验证通过");
+  } catch (e) {
+    toast("密码不正确，请重试");
+  }
+};
+$("auth-input").addEventListener("keydown", e => { if (e.key === "Enter") $("auth-ok").click(); });
+
+// ---------- 选择照片 + EXIF ----------
+
+$("pick-btn").onclick = () => $("file-input").click();
+
+$("file-input").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  file = f;
+  angle = 0;
+  applyRotation();
+  if (objectUrl) URL.revokeObjectURL(objectUrl);
+  objectUrl = URL.createObjectURL(f);
+  const img = $("preview");
+  img.onload = applyRotation;
+  img.src = objectUrl;
+  $("editor").hidden = false;
+  $("result").hidden = true;
+
+  // 先清空上一张照片的参数，再加载新照片的
+  for (const key of ["camera", "datetime", "aperture", "shutter", "iso", "focal_length"]) {
+    $("p-" + key).value = "";
+  }
+
+  const fd = new FormData();
+  fd.append("image", f);
+  try {
+    const data = await apiJson("/api/inspect", { method: "POST", body: fd });
+    const p = data.params || {};
+    let found = 0;
+    for (const key of ["camera", "datetime", "aperture", "shutter", "iso", "focal_length"]) {
+      if (p[key]) { $("p-" + key).value = p[key]; found++; }
+    }
+    toast(found ? "已读取 " + found + " 项拍摄参数" : "没读到 EXIF 参数，请手动填写");
+  } catch (err) {
+    toast("参数读取失败：" + err.message);
+  }
+});
+
+// ---------- 旋转 ----------
+
+$("rotate-btn").onclick = () => {
+  angle = (angle + 90) % 360;
+  applyRotation();
+};
+
+function applyRotation() {
+  const img = $("preview"), wrap = $("preview-wrap");
+  img.style.transform = "rotate(" + angle + "deg)";
+  if (angle % 180 !== 0) {
+    // 旋转 90/270 后宽高互换，让画面尽量填满预览框
+    img.style.maxWidth = wrap.clientHeight + "px";
+    img.style.maxHeight = wrap.clientWidth + "px";
+  } else {
+    img.style.maxWidth = "100%";
+    img.style.maxHeight = "100%";
+  }
+}
+window.addEventListener("resize", applyRotation);
+
+// ---------- 开始点评 ----------
+
+$("go-btn").onclick = async () => {
+  if (!file) { toast("请先选择照片"); return; }
+  const fd = new FormData();
+  fd.append("image", file);
+  for (const key of ["camera", "datetime", "aperture", "shutter", "iso", "focal_length"]) {
+    fd.append(key, $("p-" + key).value.trim());
+  }
+  fd.append("extra", $("extra").value.trim());
+  fd.append("intent", $("intent").value.trim());
+  fd.append("angle", String(angle));
+
+  showLoading(true);
+  try {
+    const data = await apiJson("/api/critique", { method: "POST", body: fd });
+    $("result-body").innerHTML = renderMarkdown(data.markdown || "");
+    $("result").hidden = false;
+    $("result").scrollIntoView({ behavior: "smooth" });
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    showLoading(false);
+  }
+};
+
+function showLoading(on) {
+  $("loading").hidden = !on;
+  $("go-btn").disabled = on;
+  clearInterval(elapsedTimer);
+  if (on) {
+    const start = Date.now();
+    $("elapsed").textContent = "0";
+    elapsedTimer = setInterval(() => {
+      $("elapsed").textContent = String(Math.floor((Date.now() - start) / 1000));
+    }, 1000);
+  }
+}
+
+// ---------- 迷你 Markdown 渲染 ----------
+
+function renderMarkdown(text) {
+  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = s => esc(s)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/`(.+?)`/g, "<code>$1</code>");
+  let html = "", inList = false;
+  for (const line of text.split(/\r?\n/)) {
+    const h = line.match(/^#{1,4}\s+(.*)/);
+    const li = line.match(/^\s*(?:[-•*]|\d+[.、])\s+(.*)/);
+    if (h) {
+      if (inList) { html += "</ul>"; inList = false; }
+      html += "<h3>" + inline(h[1]) + "</h3>";
+    } else if (li) {
+      if (!inList) { html += "<ul>"; inList = true; }
+      html += "<li>" + inline(li[1]) + "</li>";
+    } else if (line.trim() === "") {
+      if (inList) { html += "</ul>"; inList = false; }
+    } else {
+      if (inList) { html += "</ul>"; inList = false; }
+      html += "<p>" + inline(line) + "</p>";
+    }
+  }
+  if (inList) html += "</ul>";
+  return html;
+}
+
+// ---------- 设置 ----------
+
+let _providers = [];  // 已保存的服务商（不含完整 key）
+let _presets = [];    // 内置模板
+
+function fillSelect(sel, items, labelFn, emptyText) {
+  sel.innerHTML = "";
+  if (emptyText !== undefined && items.length === 0) {
+    const o = document.createElement("option");
+    o.value = ""; o.textContent = emptyText;
+    sel.appendChild(o);
+    return;
+  }
+  for (const item of items) {
+    const o = document.createElement("option");
+    o.value = item.name;
+    o.textContent = labelFn(item);
+    sel.appendChild(o);
+  }
+}
+
+async function loadSettings() {
+  const s = await apiJson("/api/settings");
+  _providers = s.providers || [];
+  _presets = s.presets || [];
+
+  $("s-base-url").value = s.base_url || "";
+  $("s-model").value = s.model || "";
+  $("s-key-hint").textContent = s.api_key_set
+    ? "已保存（" + s.api_key_hint + "），输入新 key 可替换；留空则不变"
+    : "未设置，请粘贴你的 API Key";
+  $("s-token-hint").textContent = s.access_token_set ? "当前已启用访问密码" : "当前未启用";
+  $("s-current").textContent = "当前使用：" + (s.model || "未配置模型")
+    + " @ " + (s.base_url || "未配置地址")
+    + "（" + (s.active_provider || "手动配置") + "）";
+
+  fillSelect($("s-provider-list"), _providers,
+    p => p.name + (p.api_key_hint ? "（" + p.api_key_hint + "）" : "（未存 key）"),
+    "（还没有已保存的服务商）");
+  fillSelect($("s-preset"), [{ name: "", base_url: "", model: "" }].concat(_presets),
+    p => p.name || "自定义");
+  if (s.active_provider) $("s-provider-list").value = s.active_provider;
+  onProviderSelect();
+}
+
+function findProvider(name) {
+  return _providers.find(p => p.name === name) || null;
+}
+
+function onProviderSelect() {
+  const p = findProvider($("s-provider-list").value);
+  if (p) {
+    $("s-base-url").value = p.base_url;
+    $("s-model").value = p.model;
+    $("s-provider-name").value = p.name;
+    $("s-key-hint").textContent = p.api_key_hint
+      ? "该服务商已存 key（" + p.api_key_hint + "），输入新 key 可替换；留空则不变"
+      : "该服务商还没存 key，请粘贴";
+  }
+}
+
+$("s-provider-list").addEventListener("change", onProviderSelect);
+
+$("s-preset").addEventListener("change", () => {
+  const p = _presets.find(x => x.name === $("s-preset").value);
+  if (!p) return;
+  $("s-base-url").value = p.base_url;
+  $("s-model").value = p.model;
+  $("s-model").placeholder = p.name.indexOf("豆包") >= 0 ? "填推理接入点 ID，如 ep-xxxx" : "";
+  $("s-provider-name").value = p.name;
+});
+
+$("settings-btn").onclick = async () => {
+  $("settings-overlay").hidden = false;
+  try {
+    await loadSettings();
+  } catch (e) {
+    toast(e.message);
+  }
+};
+$("settings-cancel").onclick = () => { $("settings-overlay").hidden = true; };
+
+// 启用选中的服务商（一键切换）
+$("s-activate").onclick = async () => {
+  const name = $("s-provider-list").value;
+  if (!name || !findProvider(name)) { toast("请先选择一个已保存的服务商"); return; }
+  try {
+    await apiJson("/api/providers/activate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    });
+    await loadSettings();
+    toast("已切换到 " + name);
+  } catch (e) {
+    toast(e.message);
+  }
+};
+
+// 删除：iOS 主屏幕模式不支持 confirm()，用两段确认
+$("s-remove").onclick = async () => {
+  const name = $("s-provider-list").value;
+  if (!name || !findProvider(name)) { toast("请先选择一个已保存的服务商"); return; }
+  const btn = $("s-remove");
+  if (btn.dataset.confirm !== "1") {
+    btn.dataset.confirm = "1";
+    btn.textContent = "再点一次确认删除";
+    setTimeout(() => { btn.dataset.confirm = ""; btn.textContent = "删除"; }, 3000);
+    return;
+  }
+  btn.dataset.confirm = ""; btn.textContent = "删除";
+  try {
+    await apiJson("/api/providers/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    });
+    await loadSettings();
+    toast("已删除 " + name);
+  } catch (e) {
+    toast(e.message);
+  }
+};
+
+// 把当前输入的 base_url/model/api_key 存为服务商
+$("s-save-provider").onclick = async () => {
+  const name = $("s-provider-name").value.trim();
+  if (!name) { toast("请先填服务商名称"); return; }
+  const body = {
+    name,
+    base_url: $("s-base-url").value.trim(),
+    model: $("s-model").value.trim()
+  };
+  const key = $("s-api-key").value.trim();
+  if (key) body.api_key = key;  // 留空表示沿用该服务商已存的 key
+  try {
+    await apiJson("/api/providers/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    await loadSettings();
+    $("s-provider-list").value = name;
+    toast("已保存服务商「" + name + "」，点「启用」即可切换");
+  } catch (e) {
+    toast("保存失败：" + e.message);
+  }
+};
+
+$("settings-save").onclick = async () => {
+  const body = {
+    base_url: $("s-base-url").value.trim(),
+    model: $("s-model").value.trim()
+  };
+  const key = $("s-api-key").value.trim();
+  if (key) body.api_key = key;
+  if ($("s-clear-token").checked) body.access_token = "";
+  else {
+    const token = $("s-access-token").value.trim();
+    if (token) body.access_token = token;
+  }
+  try {
+    await apiJson("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    $("settings-overlay").hidden = true;
+    toast("已保存");
+  } catch (e) {
+    toast("保存失败：" + e.message);
+  }
+};
+
+// ---------- 启动时检查访问密码 ----------
+
+apiJson("/api/ping").catch(() => { /* 401 时遮罩已由 apiFetch 弹出 */ });
+</script>
+</body>
+</html>

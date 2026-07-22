@@ -7,12 +7,14 @@ from PIL import Image
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -73,7 +75,30 @@ class SettingsDialog(QDialog):
         cfg = storage.load_config()
 
         layout = QVBoxLayout(self)
+
+        # 服务商：保存多份配置，下拉选择即填入，保存后一键切换
+        prov_row = QHBoxLayout()
+        self.provider_combo = QComboBox()
+        self._reload_provider_combo(cfg)
+        self.provider_combo.currentIndexChanged.connect(self._on_provider_selected)
+        save_prov_btn = QPushButton("存为服务商…")
+        save_prov_btn.clicked.connect(self._save_provider)
+        del_prov_btn = QPushButton("删除")
+        del_prov_btn.clicked.connect(self._remove_provider)
+        prov_row.addWidget(self.provider_combo, 1)
+        prov_row.addWidget(save_prov_btn)
+        prov_row.addWidget(del_prov_btn)
+
+        # 模板：快速填入常见厂商的 base_url / model
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItem("从模板填入（Kimi / 豆包 / Agnes…）", None)
+        for p in storage.PROVIDER_PRESETS:
+            self.preset_combo.addItem(p["name"], p)
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_selected)
+
         form = QFormLayout()
+        form.addRow("服务商", prov_row)
+        form.addRow("模板", self.preset_combo)
         self.key_edit = QLineEdit(cfg["api_key"])
         self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.key_edit.setPlaceholderText("sk-...")
@@ -105,6 +130,61 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    # ---- 服务商管理 ----
+
+    def _reload_provider_combo(self, cfg: dict, select: str = ""):
+        self.provider_combo.blockSignals(True)
+        self.provider_combo.clear()
+        self.provider_combo.addItem("手动配置", "")
+        for p in cfg.get("providers") or []:
+            self.provider_combo.addItem(p["name"], p["name"])
+        idx = self.provider_combo.findData(select or (cfg.get("active_provider") or ""))
+        self.provider_combo.setCurrentIndex(max(idx, 0))
+        self.provider_combo.blockSignals(False)
+
+    def _on_provider_selected(self):
+        p = storage.find_provider(storage.load_config(), self.provider_combo.currentData())
+        if p:
+            self.url_edit.setText(p.get("base_url", ""))
+            self.model_edit.setText(p.get("model", ""))
+            self.key_edit.setText(p.get("api_key", ""))
+
+    def _on_preset_selected(self):
+        p = self.preset_combo.currentData()
+        if p:
+            self.url_edit.setText(p["base_url"])
+            self.model_edit.setText(p["model"])
+            self.key_edit.setFocus()
+
+    def _save_provider(self):
+        default_name = self.provider_combo.currentData() or (
+            self.preset_combo.currentData() and self.preset_combo.currentText()
+        ) or ""
+        name, ok = QInputDialog.getText(self, "存为服务商", "服务商名称：", text=default_name)
+        name = name.strip()
+        if not ok or not name:
+            return
+        cfg = storage.load_config()
+        fields = self._cfg_from_fields()
+        storage.upsert_provider(
+            cfg, name, fields["base_url"], fields["model"], fields["api_key"] or None  # key 为空则沿用已存
+        )
+        storage.save_config(cfg)
+        self._reload_provider_combo(cfg, select=name)
+
+    def _remove_provider(self):
+        name = self.provider_combo.currentData()
+        if not name:
+            return
+        if QMessageBox.question(self, "删除服务商", f"确定删除「{name}」？") != QMessageBox.StandardButton.Yes:
+            return
+        cfg = storage.load_config()
+        storage.remove_provider(cfg, name)
+        storage.save_config(cfg)
+        self._reload_provider_combo(cfg)
+
+    # ---- 配置保存 / 测试 ----
+
     def _cfg_from_fields(self) -> dict:
         return {
             "api_key": self.key_edit.text().strip(),
@@ -113,7 +193,20 @@ class SettingsDialog(QDialog):
         }
 
     def _save(self):
-        storage.save_config(self._cfg_from_fields())
+        cfg = storage.load_config()  # 保留 access_token / providers 等其他键
+        cfg.update(self._cfg_from_fields())
+        # 三字段与所选服务商一致才算"启用该服务商"，否则视为手动配置
+        name = self.provider_combo.currentData()
+        p = storage.find_provider(cfg, name) if name else None
+        cfg["active_provider"] = (
+            name
+            if p
+            and p.get("base_url") == cfg["base_url"]
+            and p.get("model") == cfg["model"]
+            and p.get("api_key") == cfg["api_key"]
+            else ""
+        )
+        storage.save_config(cfg)
         self.accept()
 
     def _test(self):

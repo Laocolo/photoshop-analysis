@@ -4,3 +4,4 @@ requests>=2.31
 rawpy>=0.18
 exifread>=3.0
 pillow-heif>=0.13
+Flask>=3.0

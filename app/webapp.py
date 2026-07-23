@@ -154,14 +154,26 @@ def create_app() -> Flask:
     def post_settings():
         data = request.get_json(silent=True) or {}
         cfg = storage.load_config()
+
+        # 提取实际提交的模型相关字段
+        submitted_model_fields = {}
         for key in ("base_url", "model"):
             if key in data:
-                cfg[key] = str(data[key]).strip()
-        # api_key / access_token：字段存在才更新（空串表示清除），不存在则保持原值
+                submitted_model_fields[key] = str(data[key]).strip()
+
+        # 提交过 base_url 或 model → 手动配置模式，解除服务商关联
+        if submitted_model_fields:
+            cfg.update(submitted_model_fields)
+            cfg["active_provider"] = ""
+        else:
+            # 没动模型配置 → 保留服务商关联
+            pass
+
+        # api_key / access_token
         for key in ("api_key", "access_token"):
             if key in data:
                 cfg[key] = str(data[key]).strip()
-        cfg["active_provider"] = ""  # 手动保存后与服务商解除关联
+
         storage.save_config(cfg)
         return jsonify({"ok": True})
 

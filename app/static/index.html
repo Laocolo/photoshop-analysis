@@ -525,15 +525,32 @@ $("s-remove").onclick = async () => {
 };
 
 // 把当前输入的 base_url/model/api_key 存为服务商
+// 如果选中的是已保存服务商且没填新 Key，直接按「启用」处理
 $("s-save-provider").onclick = async () => {
   const name = $("s-provider-name").value.trim();
   if (!name) { toast("请先填服务商名称"); return; }
+  const existing = findProvider(name);
+  const key = $("s-api-key").value.trim();
+  // 选中了已保存服务商 + 没填新 Key → 直接启用
+  if (existing && !key) {
+    try {
+      await apiJson("/api/providers/activate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name })
+      });
+      await loadSettings();
+      toast("已切换到 " + name);
+    } catch (e) {
+      toast("切换失败：" + e.message);
+    }
+    return;
+  }
   const body = {
     name,
     base_url: $("s-base-url").value.trim(),
     model: $("s-model").value.trim()
   };
-  const key = $("s-api-key").value.trim();
   if (key) body.api_key = key;  // 留空表示沿用该服务商已存的 key
   try {
     await apiJson("/api/providers/save", {

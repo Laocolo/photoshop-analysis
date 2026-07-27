@@ -567,23 +567,30 @@ $("s-save-provider").onclick = async () => {
 };
 
 $("settings-save").onclick = async () => {
-  const body = {
-    base_url: $("s-base-url").value.trim(),
-    model: $("s-model").value.trim()
-  };
+  const baseUrl = $("s-base-url").value.trim();
+  const model = $("s-model").value.trim();
   const key = $("s-api-key").value.trim();
-  if (key) body.api_key = key;
-  if ($("s-clear-token").checked) body.access_token = "";
-  else {
-    const token = $("s-access-token").value.trim();
-    if (token) body.access_token = token;
-  }
+  const sel = findProvider($("s-provider-list").value);
+  const post = (url, obj) => apiJson(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(obj)
+  });
   try {
-    await apiJson("/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
+    if (sel && !key && sel.base_url === baseUrl && sel.model === model) {
+      // 选中已保存的服务商、内容没改、没填新 Key → 直接启用它（连同它存的 Key）
+      await post("/api/providers/activate", { name: sel.name });
+    } else {
+      const body = { base_url: baseUrl, model };
+      if (key) body.api_key = key;
+      await post("/api/settings", body);
+    }
+    // 访问密码单独提交（后端：只改密码不会解除服务商关联）
+    if ($("s-clear-token").checked) await post("/api/settings", { access_token: "" });
+    else {
+      const token = $("s-access-token").value.trim();
+      if (token) await post("/api/settings", { access_token: token });
+    }
     $("settings-overlay").hidden = true;
     toast("已保存");
   } catch (e) {

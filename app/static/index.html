@@ -163,7 +163,12 @@
 
   <div id="optimized" hidden>
     <h2 class="sec">优化后的照片（长按图片可保存到相册）</h2>
-    <div class="card"><img id="optimized-img" style="width:100%;border-radius:8px;display:block" alt="优化后的照片"></div>
+    <div class="card">
+      <div id="optimize-progress" style="color:#9ca3af;font-size:14px;padding:12px 0" hidden>
+        ⏳ AI 修图进行中，已等待 <span id="optimize-elapsed">0</span> 秒（期间可正常使用其他功能）
+      </div>
+      <img id="optimized-img" style="width:100%;border-radius:8px;display:block" alt="优化后的照片">
+    </div>
   </div>
 </main>
 
@@ -235,6 +240,19 @@
     <div class="row">
       <button class="btn btn-sub" id="settings-cancel">取消</button>
       <button class="btn btn-main" id="settings-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 优化建议编辑 -->
+<div class="overlay" id="suggest-overlay" hidden>
+  <div class="sheet">
+    <h2>确认优化建议</h2>
+    <div class="hint" style="margin-bottom:8px">已从点评中提取「后期调整建议」，将作为修图指令发给图片模型，可直接修改</div>
+    <div class="field"><textarea id="suggest-edit" style="min-height:220px"></textarea></div>
+    <div class="row">
+      <button class="btn btn-sub" id="suggest-cancel">取消</button>
+      <button class="btn btn-main" id="suggest-ok">确认优化</button>
     </div>
   </div>
 </div>
@@ -311,6 +329,9 @@ $("file-input").addEventListener("change", async e => {
   $("result").hidden = true;
   $("optimized").hidden = true;
   _lastMarkdown = "";
+  _optimizeRun++;  // 换照片后进行中的优化结果作废
+  $("optimize-btn").disabled = false;
+  $("optimize-btn").textContent = "✨ 按建议优化照片";
 
   // 先清空上一张照片的参数，再加载新照片的
   for (const key of ["camera", "datetime", "aperture", "shutter", "iso", "focal_length"]) {
@@ -382,24 +403,70 @@ $("go-btn").onclick = async () => {
 
 // ---------- 按建议优化照片 ----------
 
-$("optimize-btn").onclick = async () => {
+// 与服务端 image_edit.extract_suggestions 相同的提取规则
+function extractSuggestions(md) {
+  const m = md.match(/^#{1,4}\s*后期调整建议\s*$\n([\s\S]*?)(?=^#{1,4}\s|$)/m);
+  return m && m[1].trim() ? m[1].trim() : md;
+}
+
+let _optimizing = false;
+let _optimizeRun = 0;  // 防过期：换了照片后丢弃旧结果
+
+$("optimize-btn").onclick = () => {
   if (!file || !_lastMarkdown) { toast("请先完成一次点评"); return; }
+  $("suggest-edit").value = extractSuggestions(_lastMarkdown);
+  $("suggest-overlay").hidden = false;
+};
+$("suggest-cancel").onclick = () => { $("suggest-overlay").hidden = true; };
+
+$("suggest-ok").onclick = () => {
+  const suggestions = $("suggest-edit").value.trim();
+  if (!suggestions) { toast("优化建议不能为空"); return; }
+  $("suggest-overlay").hidden = true;
+  runOptimize(suggestions);
+};
+
+async function runOptimize(suggestions) {
+  if (_optimizing) { toast("正在优化中，请稍候"); return; }
+  _optimizing = true;
+  const myRun = ++_optimizeRun;
+  $("optimize-btn").disabled = true;
+  $("optimize-btn").textContent = "优化中…";
+  $("optimized").hidden = false;
+  $("optimized-img").style.display = "none";
+  $("optimize-progress").hidden = false;
+  $("optimized").scrollIntoView({ behavior: "smooth" });
+  const start = Date.now();
+  $("optimize-elapsed").textContent = "0";
+  const timer = setInterval(() => {
+    $("optimize-elapsed").textContent = String(Math.floor((Date.now() - start) / 1000));
+  }, 1000);
+
   const fd = new FormData();
   fd.append("image", file);
   fd.append("angle", String(angle));
-  fd.append("critique", _lastMarkdown);
-  showLoading(true, "AI 修图中，一般需要 1~3 分钟");
+  fd.append("suggestions", suggestions);
   try {
     const data = await apiJson("/api/optimize", { method: "POST", body: fd });
+    if (myRun !== _optimizeRun) return;  // 期间换了照片，丢弃旧结果
     $("optimized-img").src = data.image;
-    $("optimized").hidden = false;
-    $("optimized").scrollIntoView({ behavior: "smooth" });
+    $("optimized-img").style.display = "block";
+    toast("优化完成，长按图片可保存");
   } catch (err) {
-    toast(err.message);
+    if (myRun === _optimizeRun) {
+      $("optimized").hidden = true;
+      toast(err.message);
+    }
   } finally {
-    showLoading(false);
+    clearInterval(timer);
+    _optimizing = false;
+    if (myRun === _optimizeRun) {
+      $("optimize-progress").hidden = true;
+      $("optimize-btn").disabled = false;
+      $("optimize-btn").textContent = "✨ 按建议优化照片";
+    }
   }
-};
+}
 
 function showLoading(on, text) {
   $("loading").hidden = !on;

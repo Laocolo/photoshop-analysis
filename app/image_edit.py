@@ -95,7 +95,12 @@ def _post_images(url: str, headers: dict, payload: dict) -> dict:
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=TIMEOUT)
         except requests.RequestException as e:
-            raise ApiError(f"网络错误，请检查网络后重试：{e}") from e
+            # 网络/代理抖动（如代理客户端瞬间断连），稍后自动重试
+            last_err = ApiError(
+                f"网络错误，请检查网络后重试：{e}"
+                "（已自动重试仍失败；如果开了代理，请确认代理客户端运行正常）"
+            )
+            continue
         if resp.status_code == 401:
             raise ApiError("图片模型的 API Key 无效（401），请在设置中检查图片优化配置。")
         if resp.status_code in (429, 503):

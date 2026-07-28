@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
     QSplitter,
@@ -250,6 +251,30 @@ class SettingsDialog(QDialog):
     def _on_test(self, success: bool, msg: str):
         self.test_btn.setEnabled(True)
         self.test_label.setText("连接正常 ✓" if success else f"失败：{msg}")
+
+
+class _SuggestDialog(QDialog):
+    """优化前确认/修改修图建议。"""
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("确认优化建议")
+        self.setMinimumWidth(540)
+        layout = QVBoxLayout(self)
+        hint = QLabel("已从点评中提取「后期调整建议」，将作为修图指令发给图片模型，可直接修改：")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.edit = QPlainTextEdit(text)
+        self.edit.setMinimumHeight(240)
+        layout.addWidget(self.edit)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("开始优化")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def text(self) -> str:
+        return self.edit.toPlainText().strip()
 
 
 class _OptimizeDialog(QDialog):
@@ -519,8 +544,15 @@ class MainWindow(QMainWindow):
         if image is None or not self._last_critique:
             QMessageBox.warning(self, "还没有点评", "请先完成一次点评。")
             return
+        # 先让用户确认/修改修图建议，再真正调用
+        dlg = _SuggestDialog(image_edit.extract_suggestions(self._last_critique), self)
+        if not dlg.exec():
+            return
+        suggestions = dlg.text()
+        if not suggestions:
+            QMessageBox.warning(self, "内容为空", "优化建议不能为空。")
+            return
         cfg = storage.load_config()
-        suggestions = image_edit.extract_suggestions(self._last_critique)
         self.optimize_btn.setEnabled(False)
         self.optimize_btn.setText("优化中，约 1~3 分钟…")
         self.statusBar().showMessage("正在调用图片模型优化…")

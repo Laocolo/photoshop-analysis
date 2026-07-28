@@ -128,8 +128,10 @@ def create_app() -> Flask:
         if file is None or not file.filename:
             return jsonify({"error": "没有收到照片"}), 400
         critique_text = request.form.get("critique", "").strip()
-        if not critique_text:
-            return jsonify({"error": "缺少点评内容，请先完成一次点评"}), 400
+        # 前端编辑过的建议文本优先；否则从点评 markdown 中提取
+        suggestions = request.form.get("suggestions", "").strip()
+        if not suggestions and not critique_text:
+            return jsonify({"error": "缺少优化建议，请先完成一次点评"}), 400
         try:
             angle = float(request.form.get("angle", "0") or 0) % 360
         except ValueError:
@@ -147,7 +149,8 @@ def create_app() -> Flask:
             image = image.rotate(-angle, expand=True)
 
         cfg = storage.load_config()
-        suggestions = image_edit.extract_suggestions(critique_text)
+        if not suggestions:
+            suggestions = image_edit.extract_suggestions(critique_text)
         try:
             optimized = image_edit.optimize(image, suggestions, cfg)
         except ApiError as e:

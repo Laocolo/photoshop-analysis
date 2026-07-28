@@ -24,7 +24,15 @@ DEFAULT_CONFIG = {
     "access_token": "",  # 网页版访问密码，为空则不校验（仅局域网使用时建议留空）
     "active_provider": "",  # 当前关联的服务商名；空 = 手动配置
     "providers": [],  # 已保存的服务商：[{"name", "base_url", "model", "api_key"}]
+    "image_provider": "",  # 图片优化用哪个服务商的凭证；空 = 跟随当前生效配置
+    "image_model": "agnes-image-2.1-flash",  # 图片编辑模型名
 }
+
+# 内置图片编辑模型模板（图片优化功能的模型名下拉提示用）
+IMAGE_MODEL_PRESETS = [
+    {"name": "Agnes 图片", "model": "agnes-image-2.1-flash"},
+    {"name": "豆包 SeedEdit（火山方舟）", "model": "doubao-seededit-3-0-i2i-250628"},
+]
 
 # 内置服务商模板：UI 选择后自动填入 base_url / model，用户只需补 API Key
 PROVIDER_PRESETS = [

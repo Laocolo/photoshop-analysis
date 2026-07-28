@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import storage
+from . import image_edit, storage
 from .ai_client import ApiError, critique, test_connection
 from .exif_utils import read_exif
 from .image_utils import HEIF_SUFFIXES, RAW_SUFFIXES, open_as_pil
@@ -51,7 +51,7 @@ PARAM_FIELDS = (
 class _Worker(QThread):
     """在后台线程跑网络请求，避免界面卡死。"""
 
-    ok = Signal(str)
+    ok = Signal(object)  # str（点评文本）或 PIL Image（优化结果）
     fail = Signal(str)
 
     def __init__(self, fn, parent=None):
@@ -107,6 +107,25 @@ class SettingsDialog(QDialog):
         form.addRow("API Key", self.key_edit)
         form.addRow("Base URL", self.url_edit)
         form.addRow("模型", self.model_edit)
+
+        # 图片优化模型（「按建议优化照片」功能）
+        self.image_provider_combo = QComboBox()
+        self.image_provider_combo.addItem("跟随当前点评服务商", "")
+        for p in cfg.get("providers") or []:
+            self.image_provider_combo.addItem(p["name"], p["name"])
+        idx = self.image_provider_combo.findData(cfg.get("image_provider") or "")
+        self.image_provider_combo.setCurrentIndex(max(idx, 0))
+        self.image_model_edit = QLineEdit(cfg.get("image_model") or "")
+        self.image_preset_combo = QComboBox()
+        self.image_preset_combo.addItem("模板…", None)
+        for p in storage.IMAGE_MODEL_PRESETS:
+            self.image_preset_combo.addItem(p["name"], p["model"])
+        self.image_preset_combo.currentIndexChanged.connect(self._on_image_preset)
+        img_row = QHBoxLayout()
+        img_row.addWidget(self.image_model_edit, 1)
+        img_row.addWidget(self.image_preset_combo)
+        form.addRow("图片优化", self.image_provider_combo)
+        form.addRow("图片模型", img_row)
         layout.addLayout(form)
 
         hint = QLabel(
@@ -156,6 +175,11 @@ class SettingsDialog(QDialog):
             self.model_edit.setText(p["model"])
             self.key_edit.setFocus()
 
+    def _on_image_preset(self):
+        model = self.image_preset_combo.currentData()
+        if model:
+            self.image_model_edit.setText(model)
+
     def _save_provider(self):
         default_name = self.provider_combo.currentData() or (
             self.preset_combo.currentData() and self.preset_combo.currentText()
@@ -195,6 +219,8 @@ class SettingsDialog(QDialog):
     def _save(self):
         cfg = storage.load_config()  # 保留 access_token / providers 等其他键
         cfg.update(self._cfg_from_fields())
+        cfg["image_provider"] = self.image_provider_combo.currentData() or ""
+        cfg["image_model"] = self.image_model_edit.text().strip() or storage.DEFAULT_CONFIG["image_model"]
         # 三字段与所选服务商一致才算"启用该服务商"，否则视为手动配置
         name = self.provider_combo.currentData()
         p = storage.find_provider(cfg, name) if name else None
@@ -226,6 +252,39 @@ class SettingsDialog(QDialog):
         self.test_label.setText("连接正常 ✓" if success else f"失败：{msg}")
 
 
+class _OptimizeDialog(QDialog):
+    """展示 AI 优化后的照片，可另存。"""
+
+    def __init__(self, img: Image.Image, pixmap: QPixmap, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("优化后的照片")
+        self._img = img
+        layout = QVBoxLayout(self)
+        view = QLabel()
+        view.setPixmap(
+            pixmap.scaled(760, 760, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        )
+        layout.addWidget(view)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        save_btn = QPushButton("另存为…")
+        save_btn.clicked.connect(self._save)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.accept)
+        row.addWidget(save_btn)
+        row.addWidget(close_btn)
+        layout.addLayout(row)
+
+    def _save(self):
+        path, _ = QFileDialog.getSaveFileName(self, "保存优化后的照片", "优化照片.jpg", "JPEG 图片 (*.jpg)")
+        if not path:
+            return
+        try:
+            self._img.convert("RGB").save(path, "JPEG", quality=92)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "保存失败", str(e))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -237,6 +296,7 @@ class MainWindow(QMainWindow):
         self._angle = 0  # 用户手动旋转角度（逆时针，0/90/180/270）
         self._rotated: Image.Image | None = None  # 旋转结果缓存
         self._worker = None
+        self._last_critique = ""  # 最近一次点评的 markdown（「按建议优化照片」用）
 
         splitter = QSplitter()
         self.setCentralWidget(splitter)
@@ -292,9 +352,14 @@ class MainWindow(QMainWindow):
         self.go_btn = QPushButton("开始点评")
         self.go_btn.setMinimumHeight(40)
         self.go_btn.clicked.connect(self._critique)
+        self.optimize_btn = QPushButton("✨ 按建议优化照片")
+        self.optimize_btn.setEnabled(False)
+        self.optimize_btn.setToolTip("点评完成后，按「后期调整建议」调用图片模型优化这张照片")
+        self.optimize_btn.clicked.connect(self._optimize)
         settings_btn = QPushButton("设置 API Key…")
         settings_btn.clicked.connect(self._settings)
         mv.addWidget(self.go_btn)
+        mv.addWidget(self.optimize_btn)
         mv.addWidget(settings_btn)
         mv.addStretch(1)
         splitter.addWidget(mid)
@@ -337,6 +402,8 @@ class MainWindow(QMainWindow):
         self._base_image = img
         self._angle = 0
         self._rotated = None
+        self._last_critique = ""
+        self.optimize_btn.setEnabled(False)
         self._show_pixmap()
         for edit in self.param_edits.values():
             edit.clear()
@@ -430,6 +497,8 @@ class MainWindow(QMainWindow):
         self.go_btn.setEnabled(True)
         self.go_btn.setText("开始点评")
         self.result.setMarkdown(text)
+        self._last_critique = text
+        self.optimize_btn.setEnabled(True)
         self.statusBar().showMessage("点评完成")
         try:
             storage.save_record(Path(self.image_path).name, image, params, extra, intent, text)
@@ -442,6 +511,35 @@ class MainWindow(QMainWindow):
         self.go_btn.setText("开始点评")
         self.statusBar().showMessage("点评失败")
         QMessageBox.warning(self, "点评失败", msg)
+
+    # ---- 按建议优化照片 ----
+
+    def _optimize(self):
+        image = self._current_image()
+        if image is None or not self._last_critique:
+            QMessageBox.warning(self, "还没有点评", "请先完成一次点评。")
+            return
+        cfg = storage.load_config()
+        suggestions = image_edit.extract_suggestions(self._last_critique)
+        self.optimize_btn.setEnabled(False)
+        self.optimize_btn.setText("优化中，约 1~3 分钟…")
+        self.statusBar().showMessage("正在调用图片模型优化…")
+        self._opt_worker = _Worker(lambda: image_edit.optimize(image, suggestions, cfg), self)
+        self._opt_worker.ok.connect(self._optimize_done)
+        self._opt_worker.fail.connect(self._optimize_failed)
+        self._opt_worker.start()
+
+    def _optimize_done(self, img: Image.Image):
+        self.optimize_btn.setEnabled(True)
+        self.optimize_btn.setText("✨ 按建议优化照片")
+        self.statusBar().showMessage("优化完成")
+        _OptimizeDialog(img, self._to_pixmap(img.convert("RGB")), self).exec()
+
+    def _optimize_failed(self, msg: str):
+        self.optimize_btn.setEnabled(True)
+        self.optimize_btn.setText("✨ 按建议优化照片")
+        self.statusBar().showMessage("优化失败")
+        QMessageBox.warning(self, "优化失败", msg)
 
     def _settings(self):
         SettingsDialog(self).exec()

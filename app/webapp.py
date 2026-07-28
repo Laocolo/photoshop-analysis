@@ -19,7 +19,7 @@ import tempfile
 from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
-from . import exif_utils, image_utils, storage
+from . import exif_utils, image_edit, image_utils, storage
 from .ai_client import ApiError, critique
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -121,6 +121,42 @@ def create_app() -> Flask:
 
         return jsonify({"markdown": result_text})
 
+    @app.post("/api/optimize")
+    @require_token
+    def optimize_route():
+        file = request.files.get("image")
+        if file is None or not file.filename:
+            return jsonify({"error": "没有收到照片"}), 400
+        critique_text = request.form.get("critique", "").strip()
+        if not critique_text:
+            return jsonify({"error": "缺少点评内容，请先完成一次点评"}), 400
+        try:
+            angle = float(request.form.get("angle", "0") or 0) % 360
+        except ValueError:
+            angle = 0.0
+
+        tmp_path = _save_upload(file)
+        try:
+            image = image_utils.open_as_pil(tmp_path)
+        except Exception as e:
+            return jsonify({"error": f"无法读取这张照片：{e}"}), 400
+        finally:
+            _remove(tmp_path)
+
+        if angle:
+            image = image.rotate(-angle, expand=True)
+
+        cfg = storage.load_config()
+        suggestions = image_edit.extract_suggestions(critique_text)
+        try:
+            optimized = image_edit.optimize(image, suggestions, cfg)
+        except ApiError as e:
+            return jsonify({"error": str(e)}), 502
+        except Exception as e:
+            return jsonify({"error": f"优化失败：{e}"}), 500
+
+        return jsonify({"image": image_edit.encode_data_uri(optimized)})
+
     @app.get("/api/settings")
     @require_token
     def get_settings():
@@ -146,6 +182,9 @@ def create_app() -> Flask:
                 "active_provider": cfg.get("active_provider", ""),
                 "providers": providers,
                 "presets": storage.PROVIDER_PRESETS,
+                "image_provider": cfg.get("image_provider", ""),
+                "image_model": cfg.get("image_model", ""),
+                "image_model_presets": storage.IMAGE_MODEL_PRESETS,
             }
         )
 
@@ -171,6 +210,11 @@ def create_app() -> Flask:
 
         # api_key / access_token
         for key in ("api_key", "access_token"):
+            if key in data:
+                cfg[key] = str(data[key]).strip()
+
+        # 图片优化配置（与点评服务商关联无关）
+        for key in ("image_provider", "image_model"):
             if key in data:
                 cfg[key] = str(data[key]).strip()
 

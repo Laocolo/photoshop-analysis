@@ -581,11 +581,18 @@ function onProviderSelect() {
     $("s-base-url").value = p.base_url;
     $("s-model").value = p.model;
     $("s-provider-name").value = p.name;
+    if (p.image_model) $("s-image-model").value = p.image_model;  // 服务商存的图片模型一并带出
     $("s-key-hint").textContent = p.api_key_hint
       ? "该服务商已存 key（" + p.api_key_hint + "），输入新 key 可替换；留空则不变"
       : "该服务商还没存 key，请粘贴";
   }
 }
+
+// 切换图片优化服务商时，带出该服务商存的图片模型（没有则不动）
+$("s-image-provider").onchange = () => {
+  const p = findProvider($("s-image-provider").value);
+  if (p && p.image_model) $("s-image-model").value = p.image_model;
+};
 
 $("s-provider-list").addEventListener("change", onProviderSelect);
 
@@ -675,7 +682,8 @@ $("s-save-provider").onclick = async () => {
   const body = {
     name,
     base_url: $("s-base-url").value.trim(),
-    model: $("s-model").value.trim()
+    model: $("s-model").value.trim(),
+    image_model: $("s-image-model").value.trim()
   };
   if (key) body.api_key = key;  // 留空表示沿用该服务商已存的 key
   try {

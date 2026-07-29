@@ -32,6 +32,7 @@ DEFAULT_CONFIG = {
 IMAGE_MODEL_PRESETS = [
     {"name": "Agnes 图片", "model": "agnes-image-2.1-flash"},
     {"name": "豆包 SeedEdit（火山方舟）", "model": "doubao-seededit-3-0-i2i-250628"},
+    {"name": "魔搭 Qwen 图片编辑（每日免费）", "model": "Qwen/Qwen-Image-Edit-2511"},
 ]
 
 # 内置服务商模板：UI 选择后自动填入 base_url / model，用户只需补 API Key
@@ -40,6 +41,7 @@ PROVIDER_PRESETS = [
     {"name": "Kimi Code", "base_url": "https://api.kimi.com/coding/v1", "model": "kimi-for-coding"},
     {"name": "豆包（火山方舟）", "base_url": "https://ark.cn-beijing.volces.com/api/v3", "model": ""},
     {"name": "Agnes AI", "base_url": "https://apihub.agnes-ai.com/v1", "model": "agnes-2.0-flash"},
+    {"name": "魔搭社区（ModelScope）", "base_url": "https://api-inference.modelscope.cn/v1", "model": ""},
 ]
 
 
@@ -67,16 +69,25 @@ def find_provider(cfg: dict, name: str) -> dict | None:
     return None
 
 
-def upsert_provider(cfg: dict, name: str, base_url: str, model: str, api_key: str | None = None) -> dict:
-    """按名称新建或更新服务商；api_key 传 None 表示沿用已保存的 key。"""
+def upsert_provider(
+    cfg: dict,
+    name: str,
+    base_url: str,
+    model: str,
+    api_key: str | None = None,
+    image_model: str | None = None,
+) -> dict:
+    """按名称新建或更新服务商；api_key / image_model 传 None 表示沿用已保存的值。"""
     p = find_provider(cfg, name)
     if p is None:
-        p = {"name": name, "base_url": "", "model": "", "api_key": ""}
+        p = {"name": name, "base_url": "", "model": "", "api_key": "", "image_model": ""}
         cfg.setdefault("providers", []).append(p)
     p["base_url"] = base_url
     p["model"] = model
     if api_key is not None:
         p["api_key"] = api_key
+    if image_model is not None:
+        p["image_model"] = image_model
     return p
 
 

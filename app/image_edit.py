@@ -1,9 +1,10 @@
-"""按点评的「后期调整建议」调用图片编辑模型（Agnes / 豆包 SeedEdit 等）优化照片。
+"""按点评的「后期调整建议」调用图片编辑模型（Agnes / 豆包 SeedEdit / 魔搭 Qwen-Image-Edit 等）优化照片。
 
 接口为 OpenAI 风格的 POST {base_url}/images/generations，各家参数风格略有差异：
 - 豆包 SeedEdit：顶层 image 字段收 data-uri，response_format="b64_json"
 - Agnes：输入图放 extra_body.image 数组，size 必填
-先按豆包/OpenAI 风格请求，400 时自动换 Agnes 风格重试。
+- 魔搭 ModelScope：异步任务模式，image_url 收 data-uri/base64，返回 task_id 后轮询
+先按豆包/OpenAI 风格请求，400 时自动换 Agnes 风格重试；魔搭地址走独立分支。
 """
 from __future__ import annotations
 
@@ -39,14 +40,16 @@ def extract_suggestions(markdown: str) -> str:
 
 
 def _resolve_credentials(cfg: dict) -> tuple[str, str, str]:
-    """返回 (base_url, api_key, model)。image_provider 非空时用对应服务商的凭证。"""
-    model = cfg.get("image_model") or "agnes-image-2.1-flash"
+    """返回 (base_url, api_key, model)。image_provider 非空时用对应服务商的凭证，
+    且该服务商若存了 image_model 则优先于全局 image_model。"""
     name = cfg.get("image_provider") or ""
     if name:
         p = storage.find_provider(cfg, name)
         if p is None:
             raise ApiError(f"图片优化配置的服务商「{name}」不存在，请在设置中重新选择。")
+        model = p.get("image_model") or cfg.get("image_model") or "agnes-image-2.1-flash"
         return p.get("base_url", ""), p.get("api_key", ""), model
+    model = cfg.get("image_model") or "agnes-image-2.1-flash"
     return cfg.get("base_url", ""), cfg.get("api_key", ""), model
 
 
@@ -122,6 +125,67 @@ def _post_images(url: str, headers: dict, payload: dict) -> dict:
     raise last_err
 
 
+def _optimize_modelscope(base_url: str, api_key: str, model: str, prompt: str, data_uri: str, size: str) -> Image.Image:
+    """魔搭 API-Inference 异步图片编辑：提交任务 → 轮询 → 下载结果图。"""
+    base = base_url.rstrip("/")
+    headers = {
+        "Authorization": "Bearer " + api_key,
+        "Content-Type": "application/json",
+        "X-ModelScope-Async-Mode": "true",  # 魔搭图片模型要求异步模式
+    }
+    b64 = data_uri.split(",", 1)[-1]
+    # image_url 官方文档称支持 url 或 base64；先带尺寸 data-uri，400 依次降级
+    payloads = [
+        {"model": model, "prompt": prompt, "image_url": [data_uri], "size": size},
+        {"model": model, "prompt": prompt, "image_url": [data_uri]},
+        {"model": model, "prompt": prompt, "image_url": [b64]},
+    ]
+    task_id = None
+    last_err: ApiError | None = None
+    for payload in payloads:
+        try:
+            resp = requests.post(base + "/images/generations", headers=headers, json=payload, timeout=TIMEOUT)
+        except requests.RequestException as e:
+            raise ApiError(f"网络错误，请检查网络后重试：{e}")
+        if resp.status_code == 401:
+            raise ApiError("图片模型的 API Key 无效（401），请在设置中检查图片优化配置。")
+        if resp.status_code == 400:
+            last_err = ApiError(f"图片接口返回错误 400：{resp.text[:300]}")
+            continue  # 参数风格不匹配，换下一种
+        if resp.status_code != 200:
+            err = ApiError(f"图片接口返回错误 {resp.status_code}：{resp.text[:300]}")
+            err.status = resp.status_code
+            raise err
+        task_id = resp.json().get("task_id")
+        if task_id:
+            break
+    if not task_id:
+        raise last_err or ApiError("魔搭接口没有返回 task_id，请检查图片模型名是否正确。")
+
+    poll_headers = {**headers, "X-ModelScope-Task-Type": "image_generation"}
+    for _ in range(60):  # 每 5 秒查一次，最长约 5 分钟
+        time.sleep(5)
+        try:
+            resp = requests.get(base + "/tasks/" + task_id, headers=poll_headers, timeout=60)
+        except requests.RequestException:
+            continue  # 轮询抖动，下次再查
+        data = resp.json()
+        status = data.get("task_status")
+        if status == "SUCCEED":
+            img_url = (data.get("output_images") or [None])[0]
+            if not img_url:
+                raise ApiError("魔搭任务完成但没有返回结果图片。")
+            try:
+                r = requests.get(img_url, timeout=120)
+                r.raise_for_status()
+            except requests.RequestException as e:
+                raise ApiError(f"下载优化结果失败：{e}") from e
+            return Image.open(io.BytesIO(r.content))
+        if status == "FAILED":
+            raise ApiError(f"魔搭图片任务失败：{str(data)[:300]}")
+    raise ApiError("魔搭图片任务超时（约 5 分钟未完成），请稍后重试。")
+
+
 def optimize(image: Image.Image, suggestions: str, cfg: dict) -> Image.Image:
     """按建议优化照片，返回优化后的 PIL Image。"""
     base_url, api_key, model = _resolve_credentials(cfg)
@@ -132,6 +196,10 @@ def optimize(image: Image.Image, suggestions: str, cfg: dict) -> Image.Image:
 
     prompt = _EDIT_INSTRUCTION + suggestions
     data_uri = encode_data_uri(image)
+
+    if "modelscope" in base_url:  # 魔搭走异步任务分支
+        return _optimize_modelscope(base_url, api_key, model, prompt, data_uri, _size_for(image))
+
     url = base_url.rstrip("/") + "/images/generations"
     headers = {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}
     size = _size_for(image)

@@ -170,6 +170,7 @@ def create_app() -> Flask:
                 "name": p.get("name", ""),
                 "base_url": p.get("base_url", ""),
                 "model": p.get("model", ""),
+                "image_model": p.get("image_model", ""),
                 # 不下发完整 key，只给掩码提示
                 "api_key_hint": f"…{p.get('api_key', '')[-4:]}" if p.get("api_key") else "",
             }
@@ -240,6 +241,7 @@ def create_app() -> Flask:
             str(data.get("base_url", "")).strip(),
             str(data.get("model", "")).strip(),
             str(data["api_key"]).strip() if data.get("api_key") else None,  # 不传/空 = 沿用已存 key
+            str(data["image_model"]).strip() if "image_model" in data else None,  # 不传 = 沿用已存
         )
         storage.save_config(cfg)
         return jsonify({"ok": True})

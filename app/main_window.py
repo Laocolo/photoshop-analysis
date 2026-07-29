@@ -116,6 +116,7 @@ class SettingsDialog(QDialog):
             self.image_provider_combo.addItem(p["name"], p["name"])
         idx = self.image_provider_combo.findData(cfg.get("image_provider") or "")
         self.image_provider_combo.setCurrentIndex(max(idx, 0))
+        self.image_provider_combo.currentIndexChanged.connect(self._on_image_provider_selected)
         self.image_model_edit = QLineEdit(cfg.get("image_model") or "")
         self.image_preset_combo = QComboBox()
         self.image_preset_combo.addItem("模板…", None)
@@ -127,6 +128,7 @@ class SettingsDialog(QDialog):
         img_row.addWidget(self.image_preset_combo)
         form.addRow("图片优化", self.image_provider_combo)
         form.addRow("图片模型", img_row)
+        self._on_image_provider_selected()  # 打开设置时同步一次，避免显示与实际不符
         layout.addLayout(form)
 
         hint = QLabel(
@@ -168,6 +170,8 @@ class SettingsDialog(QDialog):
             self.url_edit.setText(p.get("base_url", ""))
             self.model_edit.setText(p.get("model", ""))
             self.key_edit.setText(p.get("api_key", ""))
+            if p.get("image_model"):  # 服务商存的图片模型一并带出
+                self.image_model_edit.setText(p["image_model"])
 
     def _on_preset_selected(self):
         p = self.preset_combo.currentData()
@@ -181,6 +185,12 @@ class SettingsDialog(QDialog):
         if model:
             self.image_model_edit.setText(model)
 
+    def _on_image_provider_selected(self):
+        # 切换图片优化服务商时，带出该服务商存的图片模型（没有则不动）
+        p = storage.find_provider(storage.load_config(), self.image_provider_combo.currentData() or "")
+        if p and p.get("image_model"):
+            self.image_model_edit.setText(p["image_model"])
+
     def _save_provider(self):
         default_name = self.provider_combo.currentData() or (
             self.preset_combo.currentData() and self.preset_combo.currentText()
@@ -192,7 +202,8 @@ class SettingsDialog(QDialog):
         cfg = storage.load_config()
         fields = self._cfg_from_fields()
         storage.upsert_provider(
-            cfg, name, fields["base_url"], fields["model"], fields["api_key"] or None  # key 为空则沿用已存
+            cfg, name, fields["base_url"], fields["model"], fields["api_key"] or None,  # key 为空则沿用已存
+            image_model=self.image_model_edit.text().strip() or None,  # 图片模型一并存到服务商
         )
         storage.save_config(cfg)
         self._reload_provider_combo(cfg, select=name)

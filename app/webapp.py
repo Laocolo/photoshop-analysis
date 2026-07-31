@@ -19,7 +19,7 @@ import tempfile
 from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
-from . import exif_utils, image_edit, image_utils, storage
+from . import exif_utils, image_edit, image_utils, prompt, storage
 from .ai_client import ApiError, critique
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -189,6 +189,10 @@ def create_app() -> Flask:
                 "image_provider": cfg.get("image_provider", ""),
                 "image_model": cfg.get("image_model", ""),
                 "image_model_presets": storage.IMAGE_MODEL_PRESETS,
+                "critique_role": cfg.get("critique_role", ""),
+                # 内置预设 + 用户自建合并；custom=该名存在自定义版本（可编辑/删除），
+                # prompt=当前生效的描述（自定义优先），供界面编辑预填
+                "role_presets": _merged_roles(cfg),
             }
         )
 
@@ -217,8 +221,8 @@ def create_app() -> Flask:
             if key in data:
                 cfg[key] = str(data[key]).strip()
 
-        # 图片优化配置（与点评服务商关联无关）
-        for key in ("image_provider", "image_model"):
+        # 图片优化配置 + 点评角色（与点评服务商关联无关）
+        for key in ("image_provider", "image_model", "critique_role"):
             if key in data:
                 cfg[key] = str(data[key]).strip()
 
@@ -268,11 +272,61 @@ def create_app() -> Flask:
         storage.save_config(cfg)
         return jsonify({"ok": True})
 
+    # ---- 自定义点评角色 ----
+
+    @app.post("/api/roles/save")
+    @require_token
+    def save_role():
+        data = request.get_json(silent=True) or {}
+        name = str(data.get("name", "")).strip()
+        prompt_text = str(data.get("prompt", "")).strip()
+        if not name or not prompt_text:
+            return jsonify({"error": "角色名称和角色描述都不能为空"}), 400
+        cfg = storage.load_config()
+        storage.upsert_custom_role(cfg, name, prompt_text)
+        cfg["critique_role"] = name  # 保存后直接使用新角色
+        storage.save_config(cfg)
+        return jsonify({"ok": True})
+
+    @app.post("/api/roles/remove")
+    @require_token
+    def remove_role():
+        data = request.get_json(silent=True) or {}
+        name = str(data.get("name", "")).strip()
+        cfg = storage.load_config()
+        if not storage.remove_custom_role(cfg, name):
+            return jsonify({"error": "找不到这个自定义角色"}), 404
+        if any(r["name"] == name for r in prompt.ROLE_PRESETS):
+            cfg["critique_role"] = name  # 删的是内置角色的覆盖版 → 回落到内置版
+        storage.save_config(cfg)
+        return jsonify({"ok": True})
+
     @app.errorhandler(413)
     def too_large(_e):
         return jsonify({"error": "照片太大了（超过 80MB）"}), 413
 
     return app
+
+
+def _merged_roles(cfg: dict) -> list:
+    """内置角色 + 自定义角色合并列表：custom=该名存在自定义版本，prompt=生效描述（自定义优先）。"""
+    custom = {r.get("name", ""): r.get("prompt", "") for r in cfg.get("custom_roles") or []}
+    builtin_names = {r["name"] for r in prompt.ROLE_PRESETS}
+    roles = [
+        {
+            "name": r["name"],
+            "builtin": True,
+            "custom": r["name"] in custom,
+            "prompt": custom.get(r["name"], r["prompt"]),
+        }
+        for r in prompt.ROLE_PRESETS
+    ]
+    roles.extend(
+        {"name": name, "builtin": False, "custom": True, "prompt": p}
+        for name, p in custom.items()
+        if name not in builtin_names
+    )
+    return roles
 
 
 def _save_upload(file) -> str:

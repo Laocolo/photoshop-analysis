@@ -34,6 +34,7 @@ from . import image_edit, storage
 from .ai_client import ApiError, critique, test_connection
 from .exif_utils import read_exif
 from .image_utils import HEIF_SUFFIXES, RAW_SUFFIXES, open_as_pil
+from .prompt import ROLE_PRESETS, resolve_role_prompt
 
 IMAGE_SUFFIXES = {
     ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff",
@@ -383,6 +384,27 @@ class MainWindow(QMainWindow):
         self.intent_edit.setPlaceholderText("如：想拍樱花树下的女朋友")
         extra_form.addRow("大概时间/光线", self.extra_edit)
         extra_form.addRow("我想拍什么", self.intent_edit)
+        self.role_combo = QComboBox()
+        self._reload_roles()
+        self.role_combo.currentIndexChanged.connect(self._on_role_changed)
+        role_row = QHBoxLayout()
+        role_row.addWidget(self.role_combo, 1)
+        role_add_btn = QPushButton("＋")
+        role_add_btn.setFixedWidth(34)
+        role_add_btn.setToolTip("添加自定义角色")
+        role_add_btn.clicked.connect(self._add_role)
+        role_edit_btn = QPushButton("✎")
+        role_edit_btn.setFixedWidth(34)
+        role_edit_btn.setToolTip("编辑当前角色（编辑内置角色会生成你的自定义版本）")
+        role_edit_btn.clicked.connect(self._edit_role)
+        role_del_btn = QPushButton("－")
+        role_del_btn.setFixedWidth(34)
+        role_del_btn.setToolTip("删除当前自定义角色（内置角色不可删）")
+        role_del_btn.clicked.connect(self._del_role)
+        role_row.addWidget(role_add_btn)
+        role_row.addWidget(role_edit_btn)
+        role_row.addWidget(role_del_btn)
+        extra_form.addRow("点评角色", role_row)
         mv.addLayout(extra_form)
 
         self.go_btn = QPushButton("开始点评")
@@ -506,6 +528,100 @@ class MainWindow(QMainWindow):
                 break
 
     # ---- 点评 ----
+
+    def _reload_roles(self, select: str | None = None):
+        cfg = storage.load_config()
+        custom = {r.get("name", "") for r in cfg.get("custom_roles") or []}
+        self.role_combo.blockSignals(True)
+        self.role_combo.clear()
+        self.role_combo.addItem("无角色（默认摄影老师）", "")
+        for r in ROLE_PRESETS:
+            suffix = "（自定义）" if r["name"] in custom else ""  # 内置被同名自定义覆盖
+            self.role_combo.addItem(r["name"] + suffix, r["name"])
+        for r in cfg.get("custom_roles") or []:
+            if r.get("name") not in {p["name"] for p in ROLE_PRESETS}:
+                self.role_combo.addItem(r.get("name", "") + "（自定义）", r.get("name", ""))
+        name = (cfg.get("critique_role") or "") if select is None else select
+        idx = self.role_combo.findData(name)
+        self.role_combo.setCurrentIndex(max(idx, 0))
+        self.role_combo.blockSignals(False)
+
+    def _on_role_changed(self):
+        cfg = storage.load_config()
+        cfg["critique_role"] = self.role_combo.currentData() or ""
+        storage.save_config(cfg)
+
+    def _role_dialog(self, title: str, name: str = "", text: str = "", name_readonly: bool = False):
+        """角色编辑对话框，返回 (name, text)；取消返回 None。"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        form = QFormLayout(dlg)
+        name_edit = QLineEdit(name)
+        name_edit.setPlaceholderText("如：宠物摄影师")
+        name_edit.setReadOnly(name_readonly)
+        prompt_edit = QPlainTextEdit(text)
+        prompt_edit.setPlaceholderText("这个角色点评时的关注点，如：你尤其擅长宠物摄影，点评时重点关注动物的眼神、动态抓拍、背景干扰…")
+        prompt_edit.setMinimumHeight(100)
+        form.addRow("角色名称", name_edit)
+        form.addRow("角色描述", prompt_edit)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return name_edit.text().strip(), prompt_edit.toPlainText().strip()
+
+    def _save_role(self, name: str, text: str):
+        """保存（新建或覆盖）角色并启用、刷新下拉。"""
+        cfg = storage.load_config()
+        storage.upsert_custom_role(cfg, name, text)
+        cfg["critique_role"] = name  # 保存后直接启用
+        storage.save_config(cfg)
+        self._reload_roles(select=name)
+
+    def _add_role(self):
+        result = self._role_dialog("添加自定义角色")
+        if result is None:
+            return
+        name, text = result
+        if not name or not text:
+            QMessageBox.warning(self, "添加角色", "角色名称和角色描述都不能为空。")
+            return
+        self._save_role(name, text)
+
+    def _edit_role(self):
+        name = self.role_combo.currentData() or ""
+        if not name:
+            QMessageBox.information(self, "编辑角色", "请先选择一个角色。")
+            return
+        cfg = storage.load_config()
+        # 预填当前生效描述：自定义版本优先，否则内置预设的描述
+        text = resolve_role_prompt(name, cfg.get("custom_roles"))
+        result = self._role_dialog(f"编辑角色「{name}」", name, text, name_readonly=True)
+        if result is None:
+            return
+        _, new_text = result
+        if not new_text:
+            QMessageBox.warning(self, "编辑角色", "角色描述不能为空。")
+            return
+        self._save_role(name, new_text)  # 编辑内置角色 = 生成同名自定义覆盖版
+
+    def _del_role(self):
+        name = self.role_combo.currentData() or ""
+        if not name:
+            return
+        cfg = storage.load_config()
+        if not any(r.get("name") == name for r in cfg.get("custom_roles") or []):
+            QMessageBox.information(self, "删除角色", "内置角色不能删除；可以点 ✎ 改成你自己的版本。")
+            return
+        if QMessageBox.question(self, "删除角色", f"确定删除「{name}」的自定义版本？") != QMessageBox.StandardButton.Yes:
+            return
+        storage.remove_custom_role(cfg, name)
+        if any(r["name"] == name for r in ROLE_PRESETS):
+            cfg["critique_role"] = name  # 删的是覆盖版 → 回落到内置角色
+        storage.save_config(cfg)
+        self._reload_roles(select=cfg.get("critique_role") or "")
 
     def _critique(self):
         image = self._current_image()

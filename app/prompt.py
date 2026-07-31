@@ -7,6 +7,38 @@ SYSTEM_PROMPT = (
     "所有内容用中文回答。"
 )
 
+# 点评角色预设：name 用于界面显示和保存；prompt 追加到系统提示末尾改变点评视角
+ROLE_PRESETS = [
+    {"name": "人像摄影师", "prompt": "你尤其擅长人像摄影，点评时重点关注：人物在画面中的位置与比例、表情和眼神、肤色还原、人像用光（光位与光比）、背景虚化与杂乱程度、摆姿是否自然。"},
+    {"name": "风光摄影师", "prompt": "你尤其擅长风光摄影，点评时重点关注：光线时机与方向、前景/中景/背景的层次、地平线位置与水平、天空与地面的曝光平衡、色彩氛围与天气条件。"},
+    {"name": "街拍纪实摄影师", "prompt": "你尤其擅长街头与纪实摄影，点评时重点关注：决定性瞬间、人物与环境的关系、故事性与临场感、光影对比、构图中的秩序与偶然。"},
+    {"name": "商业静物摄影师", "prompt": "你尤其擅长商业与静物摄影，点评时重点关注：布光与质感表现、主体卖点是否突出、背景干净程度、色彩搭配的精准度、画面的商业价值。"},
+]
+
+
+def role_prompt_by_name(name: str) -> str:
+    """按角色名取角色提示词；空名或未知名返回空串（= 不选角色）。"""
+    for r in ROLE_PRESETS:
+        if r["name"] == name:
+            return r["prompt"]
+    return ""
+
+
+def resolve_role_prompt(name: str, custom_roles: list | None = None) -> str:
+    """解析角色提示词：自定义角色优先，其次内置预设。"""
+    if name:
+        for r in custom_roles or []:
+            if r.get("name") == name:
+                return r.get("prompt", "")
+    return role_prompt_by_name(name)
+
+
+def build_system_prompt(role_prompt: str = "") -> str:
+    """系统提示 = 基础教学风格 + 可选的角色视角。"""
+    if role_prompt.strip():
+        return SYSTEM_PROMPT + "\n" + role_prompt.strip()
+    return SYSTEM_PROMPT
+
 _FIELD_LABELS = (
     ("aperture", "光圈"),
     ("shutter", "快门"),

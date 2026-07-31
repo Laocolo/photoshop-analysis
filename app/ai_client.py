@@ -7,7 +7,7 @@ import io
 import requests
 from PIL import Image
 
-from .prompt import SYSTEM_PROMPT, build_user_prompt
+from .prompt import build_system_prompt, build_user_prompt, resolve_role_prompt
 
 MAX_IMAGE_SIDE = 1568  # 发给 API 的图片长边上限
 JPEG_QUALITY = 85
@@ -55,9 +55,10 @@ def _post(cfg: dict, messages: list, timeout: int = 120) -> str:
 
 
 def critique(image: Image.Image, params: dict, extra_time: str, intent: str, cfg: dict) -> str:
-    """把照片（PIL Image，已按用户调整转正）+ 参数发给视觉模型，返回 markdown 点评选文。"""
+    """把照片（PIL Image，已按用户调整转正）+ 参数发给视觉模型，返回 markdown 点评选文。
+    cfg["critique_role"] 非空时按所选角色视角点评。"""
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": build_system_prompt(resolve_role_prompt(cfg.get("critique_role") or "", cfg.get("custom_roles")))},
         {
             "role": "user",
             "content": [

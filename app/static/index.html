@@ -150,6 +150,20 @@
         <label>你想要的拍摄效果</label>
         <textarea id="intent" placeholder="如：想拍出背景虚化的人像"></textarea>
       </div>
+      <div class="field">
+        <label>点评角色（可选，影响点评视角）</label>
+        <select id="role"></select>
+      </div>
+      <div class="row" style="margin-top:-6px">
+        <button class="btn btn-sub" id="role-add-toggle" style="flex:1">＋ 添加</button>
+        <button class="btn btn-sub" id="role-edit" style="flex:1">✎ 编辑当前角色</button>
+        <button class="btn btn-sub" id="role-del" style="flex:1" hidden>删除自定义版</button>
+      </div>
+      <div class="field" id="role-add-form" hidden style="margin-top:4px">
+        <input id="role-name" placeholder="角色名称，如：宠物摄影师" style="width:100%;padding:10px;border-radius:8px;border:1px solid #374151;background:#111827;color:#e5e7eb;font-size:15px;outline:none;box-sizing:border-box">
+        <textarea id="role-prompt" placeholder="角色描述：这个角色点评时重点关注什么，如：你尤其擅长宠物摄影，点评时重点关注动物的眼神、动态抓拍、背景干扰…" style="margin-top:6px"></textarea>
+        <button class="btn btn-main" id="role-save" style="width:100%;margin-top:6px">保存角色并启用</button>
+      </div>
     </div>
 
     <button class="btn btn-main" id="go-btn" style="width:100%">开始点评</button>
@@ -740,6 +754,108 @@ $("settings-save").onclick = async () => {
 // ---------- 启动时检查访问密码 ----------
 
 apiJson("/api/ping").catch(() => { /* 401 时遮罩已由 apiFetch 弹出 */ });
+
+// ---------- 点评角色 ----------
+
+let _roles = [];  // 内置 + 自定义角色列表（含 builtin 标记）
+
+async function loadRoles(selectName) {
+  try {
+    const s = await apiJson("/api/settings");
+    _roles = s.role_presets || [];
+    const sel = $("role");
+    sel.innerHTML = "";
+    const o0 = document.createElement("option");
+    o0.value = "";
+    o0.textContent = "无角色（默认摄影老师）";
+    sel.appendChild(o0);
+    _roles.forEach(r => {
+      const o = document.createElement("option");
+      o.value = r.name;
+      o.textContent = r.name + (r.custom ? "（自定义）" : "");
+      sel.appendChild(o);
+    });
+    sel.value = selectName !== undefined ? selectName : (s.critique_role || "");
+    updateRoleDel();
+  } catch (e) { /* 角色非必需，加载失败不阻塞 */ }
+}
+
+function updateRoleDel() {
+  const r = _roles.find(x => x.name === $("role").value);
+  $("role-del").hidden = !(r && r.custom);  // 有自定义版本才可删（内置的覆盖版删了会回落内置）
+}
+
+function resetRoleForm() {
+  $("role-name").value = "";
+  $("role-name").disabled = false;
+  $("role-prompt").value = "";
+}
+
+$("role").onchange = async () => {
+  updateRoleDel();
+  try {
+    await apiJson("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ critique_role: $("role").value })
+    });
+  } catch (e) {
+    toast(e.message);
+  }
+};
+
+$("role-add-toggle").onclick = () => {
+  resetRoleForm();
+  $("role-add-form").hidden = !$("role-add-form").hidden;
+};
+
+$("role-edit").onclick = () => {
+  const r = _roles.find(x => x.name === $("role").value);
+  if (!r) { toast("请先选择一个角色"); return; }
+  resetRoleForm();
+  $("role-name").value = r.name;
+  $("role-name").disabled = true;  // 编辑时名称不可改；编辑内置角色会保存为同名自定义版
+  $("role-prompt").value = r.prompt || "";
+  $("role-add-form").hidden = false;
+};
+
+$("role-save").onclick = async () => {
+  const name = $("role-name").value.trim();
+  const promptText = $("role-prompt").value.trim();
+  if (!name || !promptText) { toast("角色名称和描述都不能为空"); return; }
+  try {
+    await apiJson("/api/roles/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, prompt: promptText })
+    });
+    resetRoleForm();
+    $("role-add-form").hidden = true;
+    await loadRoles(name);  // 保存后服务端已启用该角色
+    toast("角色已保存并启用");
+  } catch (e) {
+    toast(e.message);
+  }
+};
+
+$("role-del").onclick = async () => {
+  const name = $("role").value;
+  if (!name) return;
+  if (!confirm("确定删除「" + name + "」的自定义版本？")) return;
+  try {
+    await apiJson("/api/roles/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    });
+    await loadRoles();  // 覆盖版被删时服务端已回落到内置角色
+    toast("已删除");
+  } catch (e) {
+    toast(e.message);
+  }
+};
+
+loadRoles();
 </script>
 </body>
 </html>

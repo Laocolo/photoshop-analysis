@@ -26,6 +26,8 @@ DEFAULT_CONFIG = {
     "providers": [],  # 已保存的服务商：[{"name", "base_url", "model", "api_key"}]
     "image_provider": "",  # 图片优化用哪个服务商的凭证；空 = 跟随当前生效配置
     "image_model": "agnes-image-2.1-flash",  # 图片编辑模型名
+    "critique_role": "",  # 点评角色（内置或自定义角色的 name）；空 = 不选角色
+    "custom_roles": [],  # 用户自建点评角色：[{"name", "prompt"}]
 }
 
 # 内置图片编辑模型模板（图片优化功能的模型名下拉提示用）
@@ -111,6 +113,31 @@ def activate_provider(cfg: dict, name: str) -> bool:
     cfg["model"] = p.get("model", "")
     cfg["api_key"] = p.get("api_key", "")
     cfg["active_provider"] = name
+    return True
+
+
+# ---- 自定义点评角色 ----
+
+def upsert_custom_role(cfg: dict, name: str, prompt_text: str) -> dict:
+    """按名称新建或更新自定义点评角色。"""
+    roles = cfg.setdefault("custom_roles", [])
+    for r in roles:
+        if r.get("name") == name:
+            r["prompt"] = prompt_text
+            return r
+    r = {"name": name, "prompt": prompt_text}
+    roles.append(r)
+    return r
+
+
+def remove_custom_role(cfg: dict, name: str) -> bool:
+    roles = cfg.get("custom_roles") or []
+    before = len(roles)
+    cfg["custom_roles"] = [r for r in roles if r.get("name") != name]
+    if len(cfg["custom_roles"]) == before:
+        return False
+    if cfg.get("critique_role") == name:
+        cfg["critique_role"] = ""  # 正在使用的角色被删 → 回到无角色
     return True
 
 

@@ -16,11 +16,11 @@ import functools
 import os
 import tempfile
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
 
 from . import exif_utils, image_edit, image_utils, prompt, storage
-from .ai_client import ApiError, critique
+from .ai_client import ApiError, critique, test_connection
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -38,7 +38,9 @@ def create_app() -> Flask:
         token = storage.load_config().get("access_token") or ""
         if not token:
             return True  # 未设置密码：局域网内放行
-        return request.headers.get("X-Access-Token", "") == token
+        # <img> 标签无法带请求头，缩略图等场景允许用 query 参数传密码
+        return (request.headers.get("X-Access-Token", "") == token
+                or request.args.get("token", "") == token)
 
     def require_token(fn):
         @functools.wraps(fn)
@@ -53,7 +55,13 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index():
-        return send_from_directory(STATIC_DIR, "index.html")
+        resp = send_from_directory(STATIC_DIR, "index.html")
+        # 禁止缓存首页：手机端（尤其 iOS「添加到主屏幕」的 PWA）容易缓存旧页面，
+        # 导致功能更新后看不到新界面。API 与桌面端逻辑不受影响。
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+        return resp
 
     # ---- API ----
 
@@ -171,7 +179,8 @@ def create_app() -> Flask:
                 "base_url": p.get("base_url", ""),
                 "model": p.get("model", ""),
                 "image_model": p.get("image_model", ""),
-                # 不下发完整 key，只给掩码提示
+                # 完整 key 一并下发，供界面回显（与桌面端一致）；另附掩码提示便于列表展示
+                "api_key": p.get("api_key", ""),
                 "api_key_hint": f"…{p.get('api_key', '')[-4:]}" if p.get("api_key") else "",
             }
             for p in cfg.get("providers") or []
@@ -180,6 +189,7 @@ def create_app() -> Flask:
             {
                 "base_url": cfg.get("base_url", ""),
                 "model": cfg.get("model", ""),
+                "api_key": api_key,
                 "api_key_set": bool(api_key),
                 "api_key_hint": f"…{api_key[-4:]}" if api_key else "",
                 "access_token_set": bool(cfg.get("access_token")),
@@ -225,6 +235,13 @@ def create_app() -> Flask:
         for key in ("image_provider", "image_model", "critique_role"):
             if key in data:
                 cfg[key] = str(data[key]).strip()
+
+        # 切图片优化服务商时，把当前填的图片模型同步存回该服务商。
+        # 否则服务商里残留的旧模型名会在运行时覆盖新配置（「切到哪家用哪家」）。
+        if "image_provider" in data and "image_model" in data and cfg.get("image_provider"):
+            p = storage.find_provider(cfg, cfg["image_provider"])
+            if p is not None:
+                p["image_model"] = cfg["image_model"]
 
         storage.save_config(cfg)
         return jsonify({"ok": True})
@@ -301,6 +318,65 @@ def create_app() -> Flask:
         storage.save_config(cfg)
         return jsonify({"ok": True})
 
+    # ---- 测试连接（与桌面端设置里的「测试连接」一致） ----
+
+    @app.post("/api/test-connection")
+    @require_token
+    def test_conn():
+        data = request.get_json(silent=True) or {}
+        cfg = storage.load_config()
+        test_cfg = {
+            "base_url": str(data.get("base_url", "")).strip() or cfg.get("base_url", ""),
+            "model": str(data.get("model", "")).strip() or cfg.get("model", ""),
+            # 没填 key 用已保存的（网页端不回传完整 key）
+            "api_key": str(data.get("api_key", "")).strip() or cfg.get("api_key", ""),
+        }
+        if not test_cfg["api_key"]:
+            return jsonify({"error": "请先填写 API Key"}), 400
+        try:
+            reply = test_connection(test_cfg)
+        except ApiError as e:
+            return jsonify({"error": str(e)}), 502
+        return jsonify({"ok": True, "reply": reply})
+
+    # ---- 历史记录（与桌面端历史面板一致） ----
+
+    @app.get("/api/history")
+    @require_token
+    def history_list():
+        items = [
+            {
+                "id": d.name,
+                "time": meta.get("time", ""),
+                "image_name": meta.get("image_name", ""),
+                "has_thumb": (d / "thumb.jpg").exists(),
+            }
+            for d, meta in storage.list_records()
+        ]
+        return jsonify({"records": items})
+
+    @app.get("/api/history/<rid>")
+    @require_token
+    def history_get(rid):
+        rec = storage.load_record(_record_dir(rid))
+        if rec is None:
+            return jsonify({"error": "记录不存在"}), 404
+        meta, text, thumb = rec
+        return jsonify({
+            "markdown": text,
+            "time": meta.get("time", ""),
+            "image_name": meta.get("image_name", ""),
+            "has_thumb": thumb.exists(),
+        })
+
+    @app.get("/api/history/<rid>/thumb")
+    @require_token
+    def history_thumb(rid):
+        thumb = _record_dir(rid) / "thumb.jpg"
+        if not thumb.exists():
+            return jsonify({"error": "没有缩略图"}), 404
+        return send_file(thumb)
+
     @app.errorhandler(413)
     def too_large(_e):
         return jsonify({"error": "照片太大了（超过 80MB）"}), 413
@@ -327,6 +403,11 @@ def _merged_roles(cfg: dict) -> list:
         if name not in builtin_names
     )
     return roles
+
+
+def _record_dir(rid: str):
+    """历史记录目录；secure_filename 过滤路径分隔符，防目录穿越。"""
+    return storage.HISTORY_DIR / secure_filename(rid)
 
 
 def _save_upload(file) -> str:

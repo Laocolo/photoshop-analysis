@@ -184,6 +184,11 @@
       <img id="optimized-img" style="width:100%;border-radius:8px;display:block" alt="优化后的照片">
     </div>
   </div>
+
+  <div id="history-sec">
+    <h2 class="sec">历史记录</h2>
+    <div class="card" id="history-list"><div class="hint">加载中…</div></div>
+  </div>
 </main>
 
 <!-- 加载遮罩 -->
@@ -229,6 +234,10 @@
         <input id="s-provider-name" placeholder="名称，如 Agnes AI" style="flex:1;padding:10px;border-radius:8px;border:1px solid #374151;background:#111827;color:#e5e7eb;font-size:15px;outline:none">
         <button class="btn btn-sub" id="s-save-provider" style="flex:0 0 auto;padding:12px 14px">存为服务商</button>
       </div>
+    </div>
+    <div class="row" style="margin-bottom:6px">
+      <button class="btn btn-sub" id="s-test" style="flex:0 0 auto">测试连接</button>
+      <div class="hint" id="s-test-result" style="flex:1;margin:0;align-self:center;word-break:break-all"></div>
     </div>
 
     <div class="field" style="margin-top:6px">
@@ -318,6 +327,10 @@ $("auth-ok").onclick = async () => {
     await apiJson("/api/ping");
     $("auth-overlay").hidden = true;
     toast("验证通过");
+    // 首次加载时（未输密码）角色/历史会因 401 加载失败，
+    // 验证通过后必须补拉，否则角色下拉只剩「无角色」、历史停在「加载中」
+    loadRoles();
+    loadHistory();
   } catch (e) {
     toast("密码不正确，请重试");
   }
@@ -408,6 +421,7 @@ $("go-btn").onclick = async () => {
     $("result-body").innerHTML = renderMarkdown(_lastMarkdown);
     $("result").hidden = false;
     $("result").scrollIntoView({ behavior: "smooth" });
+    loadHistory();  // 点评成功会存历史，刷新列表
   } catch (err) {
     toast(err.message);
   } finally {
@@ -417,10 +431,16 @@ $("go-btn").onclick = async () => {
 
 // ---------- 按建议优化照片 ----------
 
-// 与服务端 image_edit.extract_suggestions 相同的提取规则
+// 与服务端 image_edit.extract_suggestions 相同的提取规则：
+// 标题支持带编号/括号（如「## 五、后期调整建议（……）」），截到下一个标题或末尾。
 function extractSuggestions(md) {
-  const m = md.match(/^#{1,4}\s*后期调整建议\s*$\n([\s\S]*?)(?=^#{1,4}\s|$)/m);
-  return m && m[1].trim() ? m[1].trim() : md;
+  const m = md.match(/^#{1,6}\s*[^\n#]*后期调整建议[^\n]*\n([\s\S]*)/m);
+  if (!m) return md;
+  let s = m[1];
+  const next = s.search(/^#{1,4}\s/m);  // 下一个标题的起始位置
+  if (next >= 0) s = s.slice(0, next);
+  s = s.trim();
+  return s || md;
 }
 
 let _optimizing = false;
@@ -554,8 +574,9 @@ async function loadSettings() {
 
   $("s-base-url").value = s.base_url || "";
   $("s-model").value = s.model || "";
-  $("s-key-hint").textContent = s.api_key_set
-    ? "已保存（" + s.api_key_hint + "），输入新 key 可替换；留空则不变"
+  $("s-api-key").value = s.api_key || "";  // 回显已保存的 key（密码框显示为掩码）
+  $("s-key-hint").textContent = s.api_key
+    ? "已载入已保存的 key（…" + s.api_key.slice(-4) + "），输入新 key 可替换"
     : "未设置，请粘贴你的 API Key";
   $("s-token-hint").textContent = s.access_token_set ? "当前已启用访问密码" : "当前未启用";
   $("s-current").textContent = "当前使用：" + (s.model || "未配置模型")
@@ -596,8 +617,9 @@ function onProviderSelect() {
     $("s-model").value = p.model;
     $("s-provider-name").value = p.name;
     if (p.image_model) $("s-image-model").value = p.image_model;  // 服务商存的图片模型一并带出
-    $("s-key-hint").textContent = p.api_key_hint
-      ? "该服务商已存 key（" + p.api_key_hint + "），输入新 key 可替换；留空则不变"
+    $("s-api-key").value = p.api_key || "";  // 回显该服务商已存的 key（与桌面端一致）
+    $("s-key-hint").textContent = p.api_key
+      ? "已载入该服务商已存的 key（…" + p.api_key.slice(-4) + "），输入新 key 可替换"
       : "该服务商还没存 key，请粘贴";
   }
 }
@@ -628,6 +650,25 @@ $("settings-btn").onclick = async () => {
   }
 };
 $("settings-cancel").onclick = () => { $("settings-overlay").hidden = true; };
+
+// 测试连接：用当前输入的 base_url/model（key 留空则用已保存的）
+$("s-test").onclick = async () => {
+  $("s-test-result").textContent = "测试中…";
+  try {
+    const r = await apiJson("/api/test-connection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        base_url: $("s-base-url").value.trim(),
+        model: $("s-model").value.trim(),
+        api_key: $("s-api-key").value.trim()
+      })
+    });
+    $("s-test-result").textContent = "✓ 连接正常：" + (r.reply || "").slice(0, 30);
+  } catch (e) {
+    $("s-test-result").textContent = "✗ " + e.message;
+  }
+};
 
 // 启用选中的服务商（一键切换）
 $("s-activate").onclick = async () => {
@@ -678,8 +719,8 @@ $("s-save-provider").onclick = async () => {
   if (!name) { toast("请先填服务商名称"); return; }
   const existing = findProvider(name);
   const key = $("s-api-key").value.trim();
-  // 选中了已保存服务商 + 没填新 Key → 直接启用
-  if (existing && !key) {
+  // 选中了已保存服务商 + key 没变（回显的还是它存的 key）→ 直接启用
+  if (existing && key === (existing.api_key || "")) {
     try {
       await apiJson("/api/providers/activate", {
         method: "POST",
@@ -725,8 +766,8 @@ $("settings-save").onclick = async () => {
     body: JSON.stringify(obj)
   });
   try {
-    if (sel && !key && sel.base_url === baseUrl && sel.model === model) {
-      // 选中已保存的服务商、内容没改、没填新 Key → 直接启用它（连同它存的 Key）
+    if (sel && key === (sel.api_key || "") && sel.base_url === baseUrl && sel.model === model) {
+      // 选中已保存的服务商、内容没改、key 没变（回显的还是它存的 key）→ 直接启用它
       await post("/api/providers/activate", { name: sel.name });
     } else {
       const body = { base_url: baseUrl, model };
@@ -855,6 +896,50 @@ $("role-del").onclick = async () => {
   }
 };
 
+// ---------- 历史记录 ----------
+
+function _tokenQuery() {
+  const t = localStorage.getItem("access_token") || "";
+  return t ? "?token=" + encodeURIComponent(t) : "";
+}
+
+async function loadHistory() {
+  try {
+    const r = await apiJson("/api/history");
+    const box = $("history-list");
+    if (!r.records || !r.records.length) {
+      box.innerHTML = '<div class="hint">还没有点评记录</div>';
+      return;
+    }
+    box.innerHTML = "";
+    r.records.slice(0, 30).forEach(rec => {
+      const div = document.createElement("div");
+      div.style.cssText = "display:flex;gap:10px;padding:8px 0;border-bottom:1px solid #1f2937;cursor:pointer;align-items:center";
+      div.innerHTML =
+        (rec.has_thumb ? '<img src="/api/history/' + encodeURIComponent(rec.id) + '/thumb' + _tokenQuery() +
+          '" style="width:44px;height:44px;object-fit:cover;border-radius:6px;flex:0 0 auto">' : "") +
+        '<div style="flex:1;min-width:0"><div style="font-size:13px">' + rec.time +
+        '</div><div class="hint" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+        (rec.image_name || "") + "</div></div>";
+      div.onclick = () => openRecord(rec.id);
+      box.appendChild(div);
+    });
+  } catch (e) { /* 历史加载失败不影响主功能 */ }
+}
+
+async function openRecord(id) {
+  try {
+    const r = await apiJson("/api/history/" + encodeURIComponent(id));
+    _lastMarkdown = r.markdown || "";
+    $("result-body").innerHTML = renderMarkdown(_lastMarkdown);
+    $("result").hidden = false;
+    $("result").scrollIntoView({ behavior: "smooth" });
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+loadHistory();
 loadRoles();
 </script>
 </body>

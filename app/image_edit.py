@@ -148,20 +148,37 @@ def _optimize_modelscope(base_url: str, api_key: str, model: str, prompt: str, d
     task_id = None
     last_err: ApiError | None = None
     for payload in payloads:
-        try:
-            resp = requests.post(base + "/images/generations", headers=headers, json=payload, timeout=TIMEOUT)
-        except requests.RequestException as e:
-            raise ApiError(f"网络错误，请检查网络后重试：{e}")
-        if resp.status_code == 401:
-            raise ApiError("图片模型的 API Key 无效（401），请在设置中检查图片优化配置。")
-        if resp.status_code == 400:
-            last_err = ApiError(f"图片接口返回错误 400：{resp.text[:300]}")
-            continue  # 参数风格不匹配，换下一种
-        if resp.status_code != 200:
-            err = ApiError(f"图片接口返回错误 {resp.status_code}：{resp.text[:300]}")
-            err.status = resp.status_code
-            raise err
-        task_id = resp.json().get("task_id")
+        # 队列满/限流（503/429）或网络抖动时自动重试，与 Agnes/豆包路径 _post_images 一致
+        for delay in (0, *RETRY_DELAYS):
+            if delay:
+                time.sleep(delay)
+            try:
+                resp = requests.post(base + "/images/generations", headers=headers, json=payload, timeout=TIMEOUT)
+            except requests.RequestException as e:
+                last_err = ApiError(
+                    f"网络错误，请检查网络后重试：{e}"
+                    "（已自动重试仍失败；如果开了代理，请确认代理客户端运行正常）"
+                )
+                continue
+            if resp.status_code == 401:
+                raise ApiError("图片模型的 API Key 无效（401），请在设置中检查图片优化配置。")
+            if resp.status_code in (429, 503):
+                last_err = ApiError(
+                    f"图片接口返回错误 {resp.status_code}：{resp.text[:300]}"
+                    "（模型队列繁忙，已自动重试仍失败，请稍后再点一次）"
+                )
+                last_err.status = resp.status_code
+                continue
+            if resp.status_code == 400:
+                last_err = ApiError(f"图片接口返回错误 400：{resp.text[:300]}")
+                break  # 参数风格不匹配，换下一种
+            if resp.status_code != 200:
+                err = ApiError(f"图片接口返回错误 {resp.status_code}：{resp.text[:300]}")
+                err.status = resp.status_code
+                raise err
+            task_id = resp.json().get("task_id")
+            if task_id:
+                break
         if task_id:
             break
     if not task_id:
